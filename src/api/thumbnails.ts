@@ -5,6 +5,7 @@ import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import path from 'node:path';
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
+import { randomBytes } from "node:crypto";
 
 type Thumbnail = {
   data: ArrayBuffer;
@@ -48,7 +49,10 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   if (!((mediaType === "jpg") || (mediaType === "png")))
     throw new BadRequestError('Filetype haste to be jpeg or png')
 
-  const filePath = path.join(cfg.assetsRoot, `${videoId}.${mediaType}`);
+  const origin = new URL(req.url).origin;
+  const fileName = randomBytes(32).toString('base64url')
+
+  const filePath = path.join(cfg.assetsRoot, `${fileName}.${mediaType}`);
   await Bun.write(filePath, file)
 
   const metaData = getVideo(cfg.db, videoId);
@@ -56,8 +60,8 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   if (metaData?.userID !== userID)
     throw new UserForbiddenError('User forbidden');
 
-  metaData.thumbnailURL = '/' + filePath;
-
+  metaData.thumbnailURL = `${origin}/assets/${fileName}.${mediaType}`;
+  console.log(metaData.thumbnailURL)
   updateVideo(cfg.db, metaData);
 
   return respondWithJSON(200, metaData);
