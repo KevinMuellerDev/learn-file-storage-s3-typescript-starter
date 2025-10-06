@@ -62,12 +62,12 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     await unlink(newFilePath);
   }
 
-  //metaData.videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${aspectRatio}/${fileName}.mp4`;
-  metaData.videoURL = `${aspectRatio}/${fileName}.mp4`;
+  metaData.videoURL = `${cfg.s3CfDistribution}/${aspectRatio}/${fileName}.mp4`;
+
 
   updateVideo(cfg.db, metaData);
-  const newMetaData = dbVideoToSignedVideo(cfg, metaData)
-  return respondWithJSON(200, newMetaData);
+
+  return respondWithJSON(200, metaData);
 }
 
 
@@ -122,23 +122,4 @@ export async function processVideoForFastStart(inputFilePath: string) {
   }
 
   return outputFilePath;
-}
-
-export function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
-
-  console.debug("presign key:", key, "bucket:", cfg.s3Bucket);
-  const file = cfg.s3Client.file(key, { bucket: cfg.s3Bucket });
-  const url = file.presign({ expiresIn: expireTime });
-  console.debug("url: ", url)
-  return url;
-}
-
-export function dbVideoToSignedVideo(cfg: ApiConfig, video: Video): Video {
-  if (!video.videoURL) return video;
-  const key = video.videoURL;
-  const url = generatePresignedURL(cfg, key, 180);
-  if (typeof url !== "string") {
-    console.error("presign did not return string:", url);
-  }
-  return { ...video, videoURL: url };
 }
