@@ -1,9 +1,10 @@
 import { type ApiConfig } from "../config";
 import { getBearerToken, validateJWT } from "../auth";
-import { createVideo, deleteVideo, getVideo, getVideos } from "../db/videos";
+import { createVideo, deleteVideo, getVideo, getVideos, type Video } from "../db/videos";
 import { respondWithJSON } from "./json";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import type { BunRequest } from "bun";
+import { dbVideoToSignedVideo } from "./videos";
 
 export async function handlerVideoMetaCreate(cfg: ApiConfig, req: Request) {
   const token = getBearerToken(req.headers);
@@ -55,13 +56,21 @@ export async function handlerVideoGet(cfg: ApiConfig, req: BunRequest) {
     throw new NotFoundError("Couldn't find video");
   }
 
-  return respondWithJSON(200, video);
+  const metaData = dbVideoToSignedVideo(cfg, video);
+
+  return respondWithJSON(200, metaData);
 }
 
 export async function handlerVideosRetrieve(cfg: ApiConfig, req: Request) {
-  const token = getBearerToken(req.headers);
-  const userID = validateJWT(token, cfg.jwtSecret);
+  try {
+    const token = getBearerToken(req.headers);
+    const userID = validateJWT(token, cfg.jwtSecret);
+    const videos = getVideos(cfg.db, userID);
+    const signed = videos.map(v => dbVideoToSignedVideo(cfg, v));
+    return respondWithJSON(200, signed);
+  } catch (error) {
+    console.error("handlerVideosRetrieve error:", error);
+    return respondWithJSON(400, { error: "bad request" });
+  }
 
-  const videos = getVideos(cfg.db, userID);
-  return respondWithJSON(200, videos);
 }

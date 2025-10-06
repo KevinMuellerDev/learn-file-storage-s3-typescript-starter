@@ -1,12 +1,13 @@
 import { respondWithJSON } from "./json";
 import { type ApiConfig } from "../config";
-import type { BunRequest } from "bun";
+import { S3Client, type BunRequest } from "bun";
 import { BadRequestError, UserForbiddenError, UserNotAuthenticatedError } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
-import { getVideo, updateVideo } from "../db/videos";
+import { getVideo, updateVideo, type Video } from "../db/videos";
 import { randomBytes } from 'node:crypto';
 import path from "node:path";
 import { unlink } from "node:fs/promises";
+import { stderr } from "node:process";
 
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const UPLOAD_LIMIT = 1 << 30;
@@ -43,11 +44,13 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const fileName = randomBytes(32).toString('base64url');
   const filePath = path.join(cfg.assetsRoot, `temp/${fileName}.mp4`);
 
+  //STARTING UPLOAD PROCESS 
   await Bun.write(filePath, file);
+  const newFilePath = await processVideoForFastStart(filePath)
 
-  const aspectRatio = await getVideoAspectRatio(filePath);
-  console.log(aspectRatio);
-  const tempFile = Bun.file(filePath);
+  const aspectRatio = await getVideoAspectRatio(newFilePath);
+
+  const tempFile = Bun.file(newFilePath);
   const s3File = cfg.s3Client.file(`${aspectRatio}/${fileName}.mp4`);
 
   try {
@@ -56,12 +59,15 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     throw new Error('File couldnt be uploaded')
   } finally {
     await unlink(filePath);
+    await unlink(newFilePath);
   }
 
-  metaData.videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${aspectRatio}/${fileName}.mp4`;
-  updateVideo(cfg.db, metaData);
+  //metaData.videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${aspectRatio}/${fileName}.mp4`;
+  metaData.videoURL = `${aspectRatio}/${fileName}.mp4`;
 
-  return respondWithJSON(200, metaData);
+  updateVideo(cfg.db, metaData);
+  const newMetaData = dbVideoToSignedVideo(cfg, metaData)
+  return respondWithJSON(200, newMetaData);
 }
 
 
@@ -92,4 +98,47 @@ export async function getVideoAspectRatio(filePath: string) {
   } else {
     return "other"
   }
+}
+
+export async function processVideoForFastStart(inputFilePath: string) {
+  const outputFilePath = inputFilePath + ".processed";
+
+  try {
+    const proc = Bun.spawn(["ffmpeg", "-i", inputFilePath, "-movflags", "faststart", "-map_metadata", "0", "-codec", "copy", "-f", "mp4", outputFilePath], {
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+
+    await proc.exited;
+
+    if (proc.exitCode !== 0) {
+      const errMessage = await new Response(proc.stderr).text();
+      throw new Error(`Processing video failed: ${errMessage}`);
+    }
+  } catch (error) {
+    await unlink(outputFilePath).catch(() => { });
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(msg);
+  }
+
+  return outputFilePath;
+}
+
+export function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
+
+  console.debug("presign key:", key, "bucket:", cfg.s3Bucket);
+  const file = cfg.s3Client.file(key, { bucket: cfg.s3Bucket });
+  const url = file.presign({ expiresIn: expireTime });
+  console.debug("url: ", url)
+  return url;
+}
+
+export function dbVideoToSignedVideo(cfg: ApiConfig, video: Video): Video {
+  if (!video.videoURL) return video;
+  const key = video.videoURL;
+  const url = generatePresignedURL(cfg, key, 180);
+  if (typeof url !== "string") {
+    console.error("presign did not return string:", url);
+  }
+  return { ...video, videoURL: url };
 }
